@@ -1,0 +1,2 @@
+# keep line endings consistent between Windows (RStudio) and git
+* text=auto eol=lf

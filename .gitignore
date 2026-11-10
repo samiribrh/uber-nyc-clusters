@@ -1,0 +1,23 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# created by the scripts
+data/processed/*
+!data/processed/.gitkeep
+
+# rendered output and caches
+report/*_cache/
+report/*_files/
+*.html
+!report/*.html
+
+# system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# plots R writes when run outside RStudio
+Rplots.pdf
