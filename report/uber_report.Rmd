@@ -1,0 +1,279 @@
+---
+title: "Where do New Yorkers take Uber?"
+subtitle: "Clustering one million Uber pickups and forecasting demand per zone"
+date: "November 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    self_contained: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(eval = FALSE, echo = TRUE, comment = NA)
+fig <- function(file) knitr::include_graphics(file.path("..", "figures", file))
+```
+
+# Introduction
+
+Uber pickups are not spread evenly across a city. Most of them happen in a few areas, and each area is busy at different times. In this report I use clustering to find the main Uber pickup areas in New York City, using only the pickup locations. Then I look at how busy each area is during the day, the week and the month. Finally, I use these areas to make forecasts.
+
+The report answers five questions:
+
+1. Where are the main pickup areas in New York City?
+2. How does demand in each area change during the day?
+3. How does it change across the week and the month?
+4. Which clustering method and how many clusters work best?
+5. Can the clusters help with forecasting?
+
+All the code is in the `R/` folder, one script per step. The report shows the most important lines of code and the plots made by the scripts.
+
+# Data and preparation
+
+The data (`uber-data.csv`) has **1,028,136 Uber pickups** in New York City from 1 to 30 September 2014. Each row has the date and time of the pickup, its latitude and longitude, and the code of the Uber base. No values are missing.
+
+The date was saved as text (`"9/1/2014 0:01:00"`), so I converted it into a real date-time. From it I created the date, the hour and the day of the week:
+
+```{r}
+uber[, datetime := mdy_hms(`Date/Time`)]
+uber[, `:=`(
+  date    = as_date(datetime),
+  hour    = lubridate::hour(datetime),
+  weekday = lubridate::wday(datetime, label = TRUE, week_start = 1)
+)]
+```
+
+A few pickups are far outside the city, up to 80 km away. k-means uses averages, so such points can pull the cluster centres towards them. I kept only the pickups inside a box around New York (latitude 40.5–41.0, longitude −74.3 to −73.65). This removed **5,112 pickups (0.5%)** and left **1,023,024**.
+
+```{r, eval = TRUE, echo = FALSE, out.width = "70%", fig.align = "center"}
+fig("01_pickups_map.png")
+```
+
+When every pickup is drawn as a small dot, the map of the city appears by itself. You can see Manhattan with the empty rectangle of Central Park, Brooklyn, and three dense spots at LaGuardia, JFK and Newark airports.
+
+The number of pickups also changes over time. The quietest day was **Monday 1 September, with 19,961 pickups**. That was Labor Day, a public holiday. The busiest day was **Saturday 13 September, with 43,205 pickups**. September 2014 had five Mondays and five Tuesdays but only four of every other day, so I compared the days of the week by their average number of pickups per day:
+
+| Mon | Tue | Wed | Thu | Fri | Sat | Sun |
+|---|---|---|---|---|---|---|
+| 27,458 | 32,646 | 33,843 | 38,319 | 40,095 | 40,514 | 29,133 |
+
+Demand grows during the week. It is highest on Friday and Saturday and lowest on Sunday and Monday.
+
+# Choosing the method
+
+I made this choice on a random sample of 10,000 pickups. DBSCAN, the silhouette and the gap statistic need the distance between every pair of points, which is too much work for a million pickups. Latitude and longitude are both in degrees, so I did not scale the data.
+
+## DBSCAN
+
+DBSCAN finds clusters as crowded areas and marks lonely points as noise. It also finds the number of clusters by itself. I used `minPts = 20`. To choose `eps`, I looked at how far each point is from its 20th nearest neighbour and picked the point where this distance starts to grow quickly. That gave about 0.012 degrees, or roughly 1 km.
+
+```{r}
+eps <- quantile(kNNdist(uber_sample, k = 20), 0.95)
+db <- dbscan(uber_sample, eps = eps, minPts = 20)
+```
+
+```{r, eval = TRUE, echo = FALSE, out.width = "70%", fig.align = "center"}
+fig("02_dbscan_map.png")
+```
+
+DBSCAN finds small separate clusters at JFK, Newark airport, Hoboken and one spot in the northern Bronx. But Manhattan, Brooklyn and even LaGuardia form one big crowded area, so **92% of all pickups end up in one cluster**. I also tried other settings. Each time, the biggest cluster held 89–94% of the pickups:
+
+| minPts | eps | clusters | noise | largest cluster |
+|---|---|---|---|---|
+| 10 | 0.0084 | 11 | 3.5% | 89.1% |
+| 20 | 0.0118 | 5 | 3.6% | 92.2% |
+| 50 | 0.0201 | 3 | 3.1% | 93.6% |
+
+So DBSCAN is good at finding single hotspots, but it cannot split the city into areas. k-means puts every pickup into one of *k* areas, which is what I need for the rest of the analysis.
+
+## The number of clusters
+
+I checked three methods for k-means with *k* from 1 to 10:
+
+```{r}
+fviz_nbclust(uber_sample, kmeans, method = "wss", k.max = 10)
+fviz_nbclust(uber_sample, kmeans, method = "silhouette", k.max = 10)
+fviz_nbclust(uber_sample, kmeans, method = "gap_stat", k.max = 10, iter.max = 50)
+```
+
+```{r, eval = TRUE, echo = FALSE, out.width = "32%", fig.show = "hold"}
+fig("02_kmeans_elbow_wss.png")
+fig("02_kmeans_silhouette.png")
+fig("02_kmeans_gap.png")
+```
+
+- **Elbow method.** The biggest drop is from *k* = 1 to *k* = 2. After that, the curve keeps going down in similar steps until about *k* = 7 and only becomes flat after that. There is no sharp bend, but the flattening after 7 fits *k* = 7.
+- **Silhouette.** The best score is at *k* = 2 (0.68). But with two clusters, the city is only split into the centre and the rest, which is not useful. The best score after that is at *k* = 7 (0.46).
+- **Gap statistic.** It suggests *k* = 1, meaning no clusters. This method compares the data with points spread evenly over the map. That is a bad comparison for a city with one very crowded centre and a few small spots far away.
+
+I chose **k-means with *k* = 7**. It has the best useful silhouette score, the elbow curve becomes flat after it, and every cluster is a clear part of the city.
+
+# Seven pickup areas
+
+Then I ran k-means on all 1,023,024 pickups, with 25 random starts:
+
+```{r}
+km <- kmeans(uber[, .(Lon, Lat)], centers = 7, nstart = 25, iter.max = 50)
+```
+
+I named each area after where its centre is:
+
+| Area | Centre (lon, lat) | Pickups | Share |
+|---|---|---|---|
+| Lower Manhattan | −73.998, 40.731 | 422,048 | 41.3% |
+| Midtown & Upper Manhattan | −73.972, 40.766 | 355,568 | 34.8% |
+| Brooklyn | −73.964, 40.688 | 140,608 | 13.7% |
+| LaGuardia & Queens | −73.873, 40.760 | 43,881 | 4.3% |
+| JFK | −73.781, 40.657 | 29,588 | 2.9% |
+| Bronx & Upper Manhattan | −73.916, 40.853 | 21,850 | 2.1% |
+| Newark & NJ | −74.179, 40.703 | 9,481 | 0.9% |
+
+```{r, eval = TRUE, echo = FALSE, out.width = "80%", fig.align = "center"}
+fig("03_kmeans_clusters_map.png")
+```
+
+Manhattan has three quarters of all pickups and is split into a southern and a northern area. Each airport has its own area.
+
+The map also shows two things about k-means. First, the borders between areas are straight lines, because every pickup goes to the nearest centre. So the line through Manhattan is just a cut through one crowded area, not a real border. Second, every pickup has to belong to some area, so the empty land around the airports is added to them. For example, the JFK area also covers eastern Queens, and the Newark area covers most of New Jersey.
+
+**Quality.** The seven clusters explain **83.6%** of the total variation in pickup locations (between-cluster sum of squares divided by total sum of squares). The average silhouette width, measured on a sample of 10,000 pickups, is **0.456**. That is a reasonable result for real map data, where areas flow into each other.
+
+# The areas over time
+
+The areas were found from locations only, without using time. Here I check whether they are also busy at different times. The areas are very different in size, so for each area I show the share of its own pickups.
+
+## By hour of the day
+
+```{r, eval = TRUE, echo = FALSE, out.width = "90%", fig.align = "center"}
+fig("04_zone_hourly_share.png")
+```
+
+| Area | Busiest hour | Share of pickups between 0:00 and 3:59 |
+|---|---|---|
+| Lower Manhattan | 18:00 | 7.5% |
+| Midtown & Upper Manhattan | 17:00 | 3.7% |
+| Brooklyn | 21:00 | 8.7% |
+| Bronx & Upper Manhattan | 21:00 | 7.0% |
+| LaGuardia & Queens | 20:00 | 3.7% |
+| JFK | 14:00 | 2.8% |
+| Newark & NJ | 15:00 | 3.5% |
+
+All areas are quietest between 2 and 4 am. **Midtown** follows the working day: a small rise in the morning and a big peak at 17:00. **Brooklyn and the Bronx** are busiest late in the evening and have the most pickups at night. This points to nightlife and people going home. **JFK and Newark** are busiest in the early afternoon and have an early rise at 5–6 am. They follow flight times, not office hours.
+
+## By day of the week
+
+```{r, eval = TRUE, echo = FALSE, out.width = "90%", fig.align = "center"}
+fig("04_zone_weekday_share.png")
+```
+
+The average pickups per day show three types of area:
+
+| Type | Areas | Busiest day | Quietest day |
+|---|---|---|---|
+| Nightlife | Brooklyn, Bronx, Lower Manhattan | Saturday | Monday |
+| Business | Midtown & Upper Manhattan | Thursday | Sunday |
+| Airports | JFK, Newark, LaGuardia | Sunday | Saturday or Tuesday |
+
+The differences are big. In Brooklyn, an average Saturday has almost twice as many pickups as an average Monday (1.98 times). The airports are the opposite of the rest of the city: their busiest day is Sunday, when people come back from weekend trips.
+
+## By date
+
+```{r, eval = TRUE, echo = FALSE, out.width = "90%", fig.align = "center"}
+fig("04_zone_date_share.png")
+```
+
+The same weekly pattern repeats every week, and Labor Day stands out. On 1 September, Manhattan had far fewer pickups than on an average day, and the airports had far more:
+
+| Area | Labor Day compared to an average day |
+|---|---|
+| JFK | +56% |
+| Newark & NJ | +37% |
+| LaGuardia & Queens | +25% |
+| Bronx & Upper Manhattan | −20% |
+| Brooklyn | −24% |
+| Lower Manhattan | −53% |
+| Midtown & Upper Manhattan | −55% |
+
+Offices were closed, and many people were flying home after the long weekend.
+
+## How the area centres move
+
+The centre of an area is the average location of its pickups. I calculated it for every hour to see whether the activity inside an area moves during the day.
+
+```{r}
+by_hour_centers <- uber[, .(Lon = mean(Lon), Lat = mean(Lat)),
+                        by = .(zone, hour)][order(zone, hour)]
+```
+
+```{r, eval = TRUE, echo = FALSE, out.width = "90%", fig.align = "center"}
+fig("04_zone_centers_by_hour.png")
+```
+
+The centres in Manhattan hardly move. In Lower Manhattan the hourly centre stays within 0.2 km, and in Midtown within 0.8 km. The airport areas move much more: up to 4.1 km at JFK and 5.8 km at Newark. At night their centres are in the nearby neighbourhoods, and during the day they move onto the airports, when the flights bring most of the pickups. In Brooklyn, the centre moves north towards Williamsburg and Downtown Brooklyn in the evening. From day to day the centres move much less, never more than 1.7 km.
+
+# Using the clusters for forecasting
+
+## Putting new pickups into areas
+
+The first use of the clusters is to classify new pickups. I trained the clusters on 100,000 pickups with `kcca` from the flexclust package, starting from the seven centres above. Then I predicted the area of 20,000 other pickups:
+
+```{r}
+cl <- flexclust::kcca(train, k = as.matrix(cluster_centers[, .(Lon, Lat)]),
+                      family = kccaFamily("kmeans"))
+pred <- predict(cl, newdata = test[, .(Lon, Lat)])
+mean(pred == test$cluster)
+```
+
+**99.7%** of the new pickups were put into the correct area. The few mistakes are pickups right on the border between two areas.
+
+## Forecasting daily demand per area
+
+The second use is to forecast demand for each area instead of for every single pickup. For each area, I turned the daily pickups into a time series with a weekly pattern (`frequency = 7`). I trained the models on 1–23 September and forecast the last seven days, 24–30 September. Then I compared the forecasts with what really happened.
+
+I compared three models:
+
+- **Seasonal naive** copies the last week. This is the simplest model and the baseline.
+- **ETS** (exponential smoothing) learns a normal level, an optional trend and an effect for each day of the week. Recent days count more.
+- **ARIMA**, chosen automatically by `auto.arima()`, predicts a day from the days before it and from past mistakes.
+
+```{r}
+fc_snaive <- snaive(train_y, h = 7)
+fc_ets    <- forecast(ets(train_y), h = 7)
+fc_arima  <- forecast(auto.arima(train_y), h = 7)
+accuracy(fc_ets, test_y)["Test set", c("RMSE", "MAPE")]
+```
+
+| Area | Seasonal naive | ETS | ARIMA |
+|---|---|---|---|
+| Brooklyn | 568.8 / 8.7% | **440.1 / 7.9%** | 724.3 / 12.5% |
+| Bronx & Upper Manhattan | 115.8 / 13.4% | **86.9 / 10.0%** | 115.8 / 13.4% |
+| Lower Manhattan | 1,336.2 / 8.4% | **1,173.8 / 7.4%** | 1,442.7 / 9.9% |
+| Midtown & Upper Manhattan | **1,335.8 / 9.9%** | 1,814.5 / 12.9% | 2,034.3 / 16.4% |
+| JFK | **99.4** / 9.3% | 221.2 / 21.2% | 107.6 / **9.1%** |
+| Newark & NJ | **36.7 / 9.2%** | 65.4 / 19.8% | **36.7 / 9.2%** |
+| LaGuardia & Queens | 182.8 / 10.9% | 331.4 / 18.8% | **154.4 / 9.3%** |
+
+*Error in the test week: RMSE (pickups per day) / MAPE. The best value for each area is in bold.*
+
+```{r, eval = TRUE, echo = FALSE, out.width = "85%", fig.align = "center"}
+fig("05_forecast_mape.png")
+```
+
+No model is the best everywhere:
+
+- **ETS is the best in the nightlife areas**: Brooklyn, the Bronx and Lower Manhattan. Their weekly pattern is very regular, and ETS learns it well.
+- **ETS does badly at the airports and in Midtown**, with errors of about 20% at the airports. These areas were the most affected by Labor Day. ETS learns from all past weeks, so the holiday spoils its weekly pattern. The seasonal naive model only copies the last week, never sees the holiday, and wins there.
+- **On average, the seasonal naive model is the most reliable**, with an average error (MAPE) of 10.0%, against 11.4% for ARIMA and 14.0% for ETS. ARIMA has too few days of data to learn well.
+
+Because the areas behave differently, the best forecasting model is different for each area. This is the main benefit of clustering for forecasting here: with separate areas, we can choose a model for each area instead of one model for the whole city.
+
+# Conclusions
+
+- The pickup locations alone show **seven clear areas**: two Manhattan areas with three quarters of all pickups, Brooklyn, the Bronx and northern Manhattan, and three airport areas. k-means explains 83.6% of the variation in pickup locations, with an average silhouette of 0.46.
+- **DBSCAN does not work well here.** Whatever the settings, it puts 89–94% of pickups into one cluster, because the centre of New York is one big crowded area.
+- **The areas are busy at different times**, even though time was not used to find them. Business, nightlife and airport areas peak at different hours and on different days. Labor Day moved demand from Manhattan to the airports. Inside the airport areas, activity moves from the neighbourhoods at night to the airports during the day.
+- **The clusters help with forecasting.** New pickups are put into the right area 99.7% of the time, and the best demand forecasting model depends on the area.
+
+**Limitations.** The data covers only one month. That leaves just 23 days to train each forecasting model, and a public holiday falls right at the start. Distances were measured in degrees, not kilometres, which makes east–west distances look slightly longer. DBSCAN and the silhouette were calculated on a sample of 10,000 pickups. More months of data, taking holidays into account in the forecasts, and measuring distances in kilometres would be good next steps.
