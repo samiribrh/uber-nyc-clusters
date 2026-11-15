@@ -28,7 +28,9 @@
 
 1,028,136 Uber pickups in New York City between 1 and 30 September 2014: date and time, latitude, longitude and the code of the Uber base.
 
-The data is in `data/raw/uber-data.csv`.
+**Source:** `uber-raw-data-sep14.csv` from the [FiveThirtyEight uber-tlc-foil-response repository](https://github.com/fivethirtyeight/uber-tlc-foil-response). The data was released by the NYC Taxi & Limousine Commission after a Freedom of Information Law request. The copy used here is in `data/raw/uber-data.csv`.
+
+**Cleaning:** 5,112 pickups (0.5%) outside the New York City area (latitude 40.5 to 41.0, longitude -74.3 to -73.65) are removed before clustering, which leaves 1,023,024 pickups.
 
 ## Methods
 
@@ -48,6 +50,12 @@ data/raw/   the raw data (uber-data.csv)
 figures/    plots produced by the scripts
 report/     R Markdown report and its HTML version
 ```
+
+## Limitations
+
+- The data covers a single month (September 2014), so weekly and monthly patterns come from only four weeks, and Labor Day is the only holiday.
+- The demand forecasts are trained on 1 to 23 September and tested on the last 7 days, so the comparison of models shows a method, not a benchmark.
+- Clusters are based on location only. Boundaries between zones are approximate.
 
 ## Reproducing the analysis
 

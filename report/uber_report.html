@@ -1527,9 +1527,11 @@ the scripts.</p>
 <h1><span class="header-section-number">2</span> Data and
 preparation</h1>
 <p>The data (<code>uber-data.csv</code>) has <strong>1,028,136 Uber
-pickups</strong> in New York City from 1 to 30 September 2014. Each row
-has the date and time of the pickup, its latitude and longitude, and the
-code of the Uber base. No values are missing.</p>
+pickups</strong> in New York City from 1 to 30 September 2014. It is the
+public Uber NYC pickups dataset released by FiveThirtyEight (<a href="https://github.com/fivethirtyeight/uber-tlc-foil-response">source</a>,
+file <code>uber-raw-data-sep14.csv</code>). Each row has the date and
+time of the pickup, its latitude and longitude, and the code of the Uber
+base. No values are missing.</p>
 <p>The date was saved as text (<code>&quot;9/1/2014 0:01:00&quot;</code>), so I
 converted it into a real date-time. From it I created the date, the hour
 and the day of the week:</p>
